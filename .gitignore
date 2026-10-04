@@ -12,3 +12,6 @@ wheels/
 # PyInstaller generated files
 main.spec
 
+# Per-installation WireGuard credentials and generated client configuration
+wg-keys.json
+wireguard.cfg

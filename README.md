@@ -18,6 +18,8 @@ If you run into issues, please make sure you've followed these steps carefully. 
 
 There are two ways to configure Arachnidium: via the graphical interface, or by editing `defaults.json`. Changes made in the GUI are not saved between restarts - for that, use the JSON file. If you want to run Arachnidium without the GUI, set `ENABLE_GUI` to `false` in `defaults.json`.
 
+Arachnidium generates a unique WireGuard keypair in `wg-keys.json` on first launch and reuses it on subsequent launches so existing clients can reconnect. Keep `wg-keys.json` and the generated `wireguard.cfg` private. To rotate the keypair, stop Arachnidium, delete both files, and start it again; previously configured clients must then import the new configuration.
+
 ## Running from source
 
 To run this project from source code without building it (for development purposes, or to run on unsupported platforms):

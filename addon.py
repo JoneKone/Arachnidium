@@ -1,4 +1,8 @@
 import mitmproxy
+import mitmproxy.addonmanager
+import mitmproxy.ctx
+import mitmproxy.dns
+import mitmproxy.http
 import tkinter as tk
 from tkinter import ttk
 
@@ -9,11 +13,13 @@ import aiohttp
 import time
 import io
 import os
+from pathlib import Path
 
 from PIL import Image, ImageTk
 import requests
 import json
 import qrcode
+import mitmproxy_rs.wireguard
 
 import gzip
 import zlib as deflate
@@ -98,6 +104,9 @@ def start_gui():
 
 speculative_cache = {}
 
+WIREGUARD_KEYS_PATH = Path("wg-keys.json")
+WIREGUARD_CONFIG_PATH = Path("wireguard.cfg")
+
 async def do_async_http_request(url: str):
   async with aiohttp.ClientSession() as session:
     async with session.get(url) as response:
@@ -110,6 +119,41 @@ async def do_async_http_request(url: str):
 def check_dns_blocklist(host: str):
   global DNS_BLOCKLIST
   return any((host == s or host.endswith("." + s)) for s in DNS_BLOCKLIST)
+
+def generate_wireguard_client_config(
+  wan_ip: str,
+  keys_path: Path = WIREGUARD_KEYS_PATH,
+  config_path: Path = WIREGUARD_CONFIG_PATH,
+) -> None:
+  """Create the client config from mitmproxy's per-installation keypair."""
+  with keys_path.open("r") as keys_file:
+    wg_keys = json.load(keys_file)
+
+  # mitmproxy owns this file, but Arachnidium is responsible for ensuring its
+  # installation credentials are not readable by other local users.
+  keys_path.chmod(0o600)
+
+  # mitmproxy stores private keys for both peers. Never put the server's
+  # private key in the client configuration.
+  server_public_key = mitmproxy_rs.wireguard.pubkey(wg_keys["server_key"])
+  config = f"""\
+# This file was automatically generated.
+# Delete `wg-keys.json` and restart Arachnidium to rotate the keypair.
+
+[Interface]
+PrivateKey = {wg_keys["client_key"]}
+Address = 10.0.0.1/32
+DNS = 10.0.0.53
+
+[Peer]
+PublicKey = {server_public_key}
+AllowedIPs = 0.0.0.0/0
+Endpoint = {wan_ip}:51820"""
+
+  # The generated client config contains a private key. Restrict access even
+  # when replacing a config created with more permissive permissions.
+  config_path.write_text(config)
+  config_path.chmod(0o600)
 
 async def request(flow: mitmproxy.http.HTTPFlow) -> None:
   # Reject hosts that don't pass the DNS blocklist
@@ -393,36 +437,20 @@ def load(loader: mitmproxy.addonmanager.Loader):
   else:
     print("Warning: Could not find Bun API binary - please start it manually.")
 
-  # Generate WireGuard config
-  wan_ip_req = requests.get("https://api.ipify.org")
-  if wan_ip_req.status_code != 200 or not wan_ip_req.text:
-    wan_ip_req = requests.get("https://api.seeip.org")
-  wan_ip = wan_ip_req.text
-  with open("wg-keys.json", "r") as keys_file:
-    wg_keys = json.loads(keys_file.read())
-    config = f"""\
-# This file was automatically generated.
-# To change keys, edit `wg-keys.json` instead.
-
-[Interface]
-PrivateKey = {wg_keys["client_key"]}
-Address = 10.0.0.1/32
-DNS = 10.0.0.53
-
-[Peer]
-PublicKey = {wg_keys["server_key"]}
-AllowedIPs = 0.0.0.0/0
-Endpoint = {wan_ip}:51820"""
-    # Write config to file
-    with open("wireguard.cfg", "w") as config_file:
-      config_file.write(config)
-
   # Download DNS blocklist
   global DNS_BLOCKLIST
   DNS_BLOCKLIST = requests.get("https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt").text
   DNS_BLOCKLIST = DNS_BLOCKLIST.split("\n")
   DNS_BLOCKLIST = list(map(lambda s: s.strip(), DNS_BLOCKLIST))
   DNS_BLOCKLIST = list(filter(lambda s: not s.startswith("#"), DNS_BLOCKLIST))
+
+def running():
+  # The running hook executes after the WireGuard server has started, so its
+  # per-installation key file is available here on first launch.
+  wan_ip_req = requests.get("https://api.ipify.org")
+  if wan_ip_req.status_code != 200 or not wan_ip_req.text:
+    wan_ip_req = requests.get("https://api.seeip.org")
+  generate_wireguard_client_config(wan_ip_req.text)
 
 def done():
   global ENABLE_GUI, gui_root
